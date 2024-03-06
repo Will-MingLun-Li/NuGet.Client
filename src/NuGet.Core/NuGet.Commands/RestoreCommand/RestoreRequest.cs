@@ -2,10 +2,12 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using NuGet.Common;
 using NuGet.Configuration;
+using NuGet.DependencyResolver;
 using NuGet.Frameworks;
 using NuGet.Packaging;
 using NuGet.Packaging.PackageExtraction;
@@ -41,6 +43,19 @@ namespace NuGet.Commands
             PackageSourceMapping packageSourceMapping,
             ILogger log,
             LockFileBuilderCache lockFileBuilderCache)
+            : this(project, dependencyProviders, cacheContext, clientPolicyContext, packageSourceMapping, log, lockFileBuilderCache, nodeCache: null)
+        {
+        }
+
+        public RestoreRequest(
+            PackageSpec project,
+            RestoreCommandProviders dependencyProviders,
+            SourceCacheContext cacheContext,
+            ClientPolicyContext clientPolicyContext,
+            PackageSourceMapping packageSourceMapping,
+            ILogger log,
+            LockFileBuilderCache lockFileBuilderCache,
+            ConcurrentDictionary<LibraryRangeCacheKey, GraphNode<RemoteResolveResult>> nodeCache)
         {
             CacheContext = cacheContext ?? throw new ArgumentNullException(nameof(cacheContext));
             LockFileBuilderCache = lockFileBuilderCache ?? throw new ArgumentNullException(nameof(lockFileBuilderCache));
@@ -54,6 +69,8 @@ namespace NuGet.Commands
             CompatibilityProfiles = new HashSet<FrameworkRuntimePair>();
             PackagesDirectory = dependencyProviders.GlobalPackages.RepositoryRoot;
             IsLowercasePackagesDirectory = true;
+
+            GraphNodeCache = nodeCache ?? new();
 
             // Default to the project folder
             RestoreOutputPath = Path.GetDirectoryName(Project.FilePath);
@@ -89,6 +106,8 @@ namespace NuGet.Commands
         /// A list of projects provided by external build systems (i.e. MSBuild)
         /// </summary>
         public IList<ExternalProjectReference> ExternalProjects { get; set; }
+
+        public ConcurrentDictionary<LibraryRangeCacheKey, GraphNode<RemoteResolveResult>> GraphNodeCache { get; }
 
         /// <summary>
         /// The path to the lock file to read/write. If not specified, uses the file 'project.lock.json' in the same

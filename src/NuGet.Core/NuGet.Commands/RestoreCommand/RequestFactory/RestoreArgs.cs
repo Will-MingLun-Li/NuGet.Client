@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using NuGet.Common;
 using NuGet.Configuration;
+using NuGet.DependencyResolver;
 using NuGet.Packaging;
 using NuGet.ProjectModel;
 using NuGet.Protocol;
@@ -64,6 +65,11 @@ namespace NuGet.Commands
         public bool IsRestoreOriginalAction { get; set; } = true;
 
         public bool RestoreForceEvaluate { get; set; }
+
+        /// <summary>
+        /// Cache to populate the total graph during the restore operation exactly once per node.
+        /// </summary>
+        public ConcurrentDictionary<LibraryRangeCacheKey, GraphNode<RemoteResolveResult>> GraphNodeCache { get; } = new();
 
         /// <summary>
         /// Messages that should be written to the assets file, in addition to any messages generated during the restore.

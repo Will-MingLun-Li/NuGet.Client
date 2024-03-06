@@ -192,7 +192,8 @@ namespace NuGet.Commands
                 clientPolicyContext,
                 packageSourceMapping,
                 restoreArgs.Log,
-                _lockFileBuilderCache)
+                _lockFileBuilderCache,
+                restoreArgs.GraphNodeCache)
             {
                 // Set properties from the restore metadata
                 ProjectStyle = project.PackageSpec.RestoreMetadata.ProjectStyle,

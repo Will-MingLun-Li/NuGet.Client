@@ -29,6 +29,11 @@ namespace NuGet.DependencyResolver
         public async Task<GraphNode<RemoteResolveResult>> WalkAsync(LibraryRange library, NuGetFramework framework, string runtimeIdentifier, RuntimeGraph runtimeGraph, bool recursive)
         {
             var transitiveCentralPackageVersions = new TransitiveCentralPackageVersions();
+            // Keep track of the direct ancestors so far, this is used to detect cycles 
+            var directAncestorSet = new HashSet<LibraryRange>();
+            // Keep track of all the cousin dependencies, this is used to detect eclipsed packages 
+            var cousinDependenciesSet = new HashSet<LibraryRange>();
+
             var rootNode = await CreateGraphNodeAsync(
                 libraryRange: library,
                 framework: framework,
@@ -37,7 +42,9 @@ namespace NuGet.DependencyResolver
                 predicate: _ => (recursive ? DependencyResult.Acceptable : DependencyResult.Eclipsed, null),
                 outerEdge: null,
                 transitiveCentralPackageVersions: transitiveCentralPackageVersions,
-                hasParentNodes: false);
+                hasParentNodes: false,
+                directAncestorSet: directAncestorSet,
+                cousinDependenciesSet: cousinDependenciesSet);
 
             // do not calculate the hashset of the direct dependencies for cases when there are not any elements in the transitiveCentralPackageVersions queue
             var indexedDirectDependenciesKeyNames = new Lazy<HashSet<string>>(
@@ -73,8 +80,9 @@ namespace NuGet.DependencyResolver
             Func<LibraryRange, (DependencyResult dependencyResult, LibraryDependency conflictingDependency)> predicate,
             GraphEdge<RemoteResolveResult> outerEdge,
             TransitiveCentralPackageVersions transitiveCentralPackageVersions,
-            bool hasParentNodes)
-
+            bool hasParentNodes,
+            HashSet<LibraryRange> directAncestorSet = null,
+            HashSet<LibraryRange> cousinDependenciesSet = null)
         {
             // PERF: Since this method is so heavily called for more complex graphs, we need to handle the stack state ourselves to avoid repeated
             // async state machine allocations. The stack object captures the state needed to restore the current "frame" so we can emulate the
@@ -82,6 +90,16 @@ namespace NuGet.DependencyResolver
             var stackStates = new Stack<GraphNodeStackState>();
 
             HashSet<LibraryDependency> rootRuntimeDependencies = null;
+
+            LibraryRangeCacheKey key = new(libraryRange, framework);
+
+            // If the root node is already cached, we can just return it as is
+            if (_context.GraphNodeCache.TryGetValue(key, out GraphNode<RemoteResolveResult> cachedRoot))
+            {
+                return cachedRoot;
+            }
+
+            directAncestorSet?.Add(libraryRange);
 
             if (runtimeGraph != null && !string.IsNullOrEmpty(runtimeName))
             {
@@ -105,6 +123,8 @@ namespace NuGet.DependencyResolver
 
             Debug.Assert(rootNode.Item != null, "FindLibraryCached should return an unresolved item instead of null");
             MergeRuntimeDependencies(rootRuntimeDependencies, rootNode);
+
+            _context.GraphNodeCache.GetOrAdd(key, rootNode);
 
             stackStates.Push(new GraphNodeStackState(
                 rootNode,
@@ -153,28 +173,38 @@ namespace NuGet.DependencyResolver
 
                             if (result.dependencyResult == DependencyResult.Acceptable)
                             {
-                                // Dependency edge from the current node to the dependency
-                                var innerEdge = new GraphEdge<RemoteResolveResult>(currentOuterEdge, node.Item, dependency);
-
                                 var dependencyLibraryRange = dependency.LibraryRange;
+                                key = new(dependencyLibraryRange, framework);
 
-                                HashSet<LibraryDependency> runtimeDependencies = null;
-
-                                if (runtimeGraph != null && !string.IsNullOrEmpty(runtimeName))
+                                if (_context.GraphNodeCache.TryGetValue(key, out GraphNode<RemoteResolveResult> cachedDepNode))
                                 {
-                                    EvaluateRuntimeDependencies(ref dependencyLibraryRange, runtimeName, runtimeGraph, ref runtimeDependencies);
+                                    node.InnerNodes.Add(cachedDepNode);
+                                    // Will TODO: This might not be correct since we could have multiple parents
+                                    cachedDepNode.OuterNode = node;
                                 }
+                                else
+                                {
+                                    // Dependency edge from the current node to the dependency
+                                    var innerEdge = new GraphEdge<RemoteResolveResult>(currentOuterEdge, node.Item, dependency);
 
-                                var newGraphItemTask = ResolverUtility.FindLibraryCachedAsync(
-                                    dependencyLibraryRange,
-                                    framework,
-                                    runtimeName,
-                                    _context,
-                                    CancellationToken.None);
+                                    HashSet<LibraryDependency> runtimeDependencies = null;
 
-                                // store all the data needed to construct this dependency. The library resolution may take a long time to resolve, so we just want to start that operation.
-                                var graphNodeCreationData = new GraphNodeCreationData(newGraphItemTask, runtimeDependencies, dependencyLibraryRange, innerEdge);
-                                dependencyNodeCreationData.Add(graphNodeCreationData);
+                                    if (runtimeGraph != null && !string.IsNullOrEmpty(runtimeName))
+                                    {
+                                        EvaluateRuntimeDependencies(ref dependencyLibraryRange, runtimeName, runtimeGraph, ref runtimeDependencies);
+                                    }
+
+                                    var newGraphItemTask = ResolverUtility.FindLibraryCachedAsync(
+                                        dependencyLibraryRange,
+                                        framework,
+                                        runtimeName,
+                                        _context,
+                                        CancellationToken.None);
+
+                                    // store all the data needed to construct this dependency. The library resolution may take a long time to resolve, so we just want to start that operation.
+                                    var graphNodeCreationData = new GraphNodeCreationData(newGraphItemTask, runtimeDependencies, dependencyLibraryRange, innerEdge);
+                                    dependencyNodeCreationData.Add(graphNodeCreationData);
+                                }
                             }
                             else
                             {
@@ -223,6 +253,9 @@ namespace NuGet.DependencyResolver
 
                     Debug.Assert(newNode.Item != null, "FindLibraryCached should return an unresolved item instead of null");
                     MergeRuntimeDependencies(graphNodeCreationData.RuntimeDependencies, newNode);
+
+                    key = new(graphNodeCreationData.LibraryRange, framework);
+                    _context.GraphNodeCache.GetOrAdd(key, newNode);
 
                     node.InnerNodes.Add(newNode);
 

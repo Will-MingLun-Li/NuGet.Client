@@ -60,7 +60,7 @@ param (
 
 If (-Not $SkipDelaySigning)
 {
-    & "$PSScriptRoot\scripts\utils\DisableStrongNameVerification.ps1" -skipNoOpMessage
+    # & "$PSScriptRoot\scripts\utils\DisableStrongNameVerification.ps1" -skipNoOpMessage
 }
 
 if (-not $Configuration) {
@@ -87,14 +87,8 @@ Invoke-BuildStep 'Cleaning artifacts' {
 -skip:$Fast `
 -ev +BuildErrors
 
-if ($SkipUnitTest) {
-    $VSTarget = "BuildVS;Pack";
-    $VSMessage = "Running Build"
-}
-else {
-    $VSTarget = "RunVS";
-    $VSMessage = "Running Build, Pack, Core unit tests, and Unit tests";
-}
+$VSTarget = "BuildVS;Pack";
+$VSMessage = "Running Build"
 
 $MSBuildExe = Get-MSBuildExe
 

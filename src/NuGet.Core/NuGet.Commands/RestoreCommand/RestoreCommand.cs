@@ -1356,7 +1356,8 @@ namespace NuGet.Commands
             var context = new RemoteWalkContext(
                 request.CacheContext,
                 request.PackageSourceMapping,
-                logger);
+                logger,
+                request.GraphNodeCache);
 
             foreach (var provider in request.DependencyProviders.LocalProviders)
             {

@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using NuGet.Common;
 using NuGet.Configuration;
@@ -13,6 +14,15 @@ namespace NuGet.DependencyResolver
     public class RemoteWalkContext
     {
         public RemoteWalkContext(SourceCacheContext cacheContext, PackageSourceMapping packageSourceMapping, ILogger logger)
+            : this(cacheContext, packageSourceMapping, logger, null)
+        {
+        }
+
+        public RemoteWalkContext(
+            SourceCacheContext cacheContext,
+            PackageSourceMapping packageSourceMapping,
+            ILogger logger,
+            ConcurrentDictionary<LibraryRangeCacheKey, GraphNode<RemoteResolveResult>> graphNodeCache)
         {
             CacheContext = cacheContext ?? throw new ArgumentNullException(nameof(cacheContext));
             Logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -44,6 +54,11 @@ namespace NuGet.DependencyResolver
         /// Library entry cache.
         /// </summary>
         internal TaskResultCache<LibraryRangeCacheKey, GraphItem<RemoteResolveResult>> FindLibraryEntryCache { get; }
+
+        /// <summary>
+        /// Cache of <see cref="GraphNode{TItem}"/> already seen during this restore operation.
+        /// </summary>
+        public ConcurrentDictionary<LibraryRangeCacheKey, GraphNode<RemoteResolveResult>> GraphNodeCache { get; }
 
         internal TaskResultCache<LibraryRange, Tuple<LibraryRange, RemoteMatch>> ResolvePackageLibraryMatchCache { get; }
 
