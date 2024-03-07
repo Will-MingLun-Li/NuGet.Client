@@ -42,9 +42,7 @@ namespace NuGet.DependencyResolver
                 predicate: _ => (recursive ? DependencyResult.Acceptable : DependencyResult.Eclipsed, null),
                 outerEdge: null,
                 transitiveCentralPackageVersions: transitiveCentralPackageVersions,
-                hasParentNodes: false,
-                directAncestorSet: directAncestorSet,
-                cousinDependenciesSet: cousinDependenciesSet);
+                hasParentNodes: false);
 
             // do not calculate the hashset of the direct dependencies for cases when there are not any elements in the transitiveCentralPackageVersions queue
             var indexedDirectDependenciesKeyNames = new Lazy<HashSet<string>>(
@@ -80,9 +78,7 @@ namespace NuGet.DependencyResolver
             Func<LibraryRange, (DependencyResult dependencyResult, LibraryDependency conflictingDependency)> predicate,
             GraphEdge<RemoteResolveResult> outerEdge,
             TransitiveCentralPackageVersions transitiveCentralPackageVersions,
-            bool hasParentNodes,
-            HashSet<LibraryRange> directAncestorSet = null,
-            HashSet<LibraryRange> cousinDependenciesSet = null)
+            bool hasParentNodes)
         {
             // PERF: Since this method is so heavily called for more complex graphs, we need to handle the stack state ourselves to avoid repeated
             // async state machine allocations. The stack object captures the state needed to restore the current "frame" so we can emulate the
@@ -98,8 +94,6 @@ namespace NuGet.DependencyResolver
             {
                 return cachedRoot;
             }
-
-            directAncestorSet?.Add(libraryRange);
 
             if (runtimeGraph != null && !string.IsNullOrEmpty(runtimeName))
             {
@@ -162,22 +156,56 @@ namespace NuGet.DependencyResolver
                         if (currentOuterEdge == null
                             || dependency.SuppressParent != LibraryIncludeFlags.All)
                         {
-                            var result = WalkParentsAndCalculateDependencyResult(currentOuterEdge, dependency, predicate);
+                            // Will TODO: Replace this with my set comparison logic later
+                            // var result = WalkParentsAndCalculateDependencyResult(currentOuterEdge, dependency, predicate);
 
-                            // Check for a cycle, this is needed for A (project) -> A (package)
-                            // since the predicate will not be called for leaf nodes.
-                            if (StringComparer.OrdinalIgnoreCase.Equals(dependency.Name, currentLibraryRange.Name))
+                            // Will TODO: Deal with transitive pinning stuff later
+                            HashSet<string> currentDirectAncestors = node.DirectAncestors;
+                            HashSet<LibraryDependency> currentCousinDependencies = node.CousinDependencies;
+                            bool potentiallyEclipsed = false;
+                            DependencyResult result = DependencyResult.Acceptable;
+
+                            foreach (LibraryDependency d in currentCousinDependencies)
                             {
-                                result = (DependencyResult.Cycle, dependency);
+                                if (dependency.LibraryRange.IsEclipsedBy(d.LibraryRange))
+                                {
+                                    if (d.LibraryRange.VersionRange != null &&
+                                        dependency.LibraryRange.VersionRange != null &&
+                                        !IsGreaterThanOrEqualTo(d.LibraryRange.VersionRange, dependency.LibraryRange.VersionRange))
+                                    {
+                                        result = DependencyResult.PotentiallyDowngraded;
+                                    }
+                                    else
+                                    {
+                                        result = DependencyResult.Eclipsed;
+                                        potentiallyEclipsed = true;
+                                    }
+
+                                    break;
+                                }
                             }
 
-                            if (result.dependencyResult == DependencyResult.Acceptable)
+                            currentCousinDependencies.AddRange(node.Item.Data.Dependencies.Where(dep => !StringComparer.OrdinalIgnoreCase.Equals(dep.Name, dependency.Name)));
+
+                            if (currentOuterEdge == null)
+                            {
+                                currentDirectAncestors.Add(libraryRange.Name);
+                            }
+
+                            if (currentDirectAncestors.Contains(dependency.Name))
+                            {
+                                result = DependencyResult.Cycle;
+                            }
+
+                            if (result == DependencyResult.Acceptable)
                             {
                                 var dependencyLibraryRange = dependency.LibraryRange;
                                 key = new(dependencyLibraryRange, framework);
 
                                 if (_context.GraphNodeCache.TryGetValue(key, out GraphNode<RemoteResolveResult> cachedDepNode))
                                 {
+                                    // Will TODO: Check the cached node's PotentialDowngrade and Eclipsed sets, and add any downgrades/eclipsed libraries into them
+
                                     node.InnerNodes.Add(cachedDepNode);
                                     // Will TODO: This might not be correct since we could have multiple parents
                                     cachedDepNode.OuterNode = node;
@@ -202,10 +230,20 @@ namespace NuGet.DependencyResolver
                                         CancellationToken.None);
 
                                     // store all the data needed to construct this dependency. The library resolution may take a long time to resolve, so we just want to start that operation.
-                                    var graphNodeCreationData = new GraphNodeCreationData(newGraphItemTask, runtimeDependencies, dependencyLibraryRange, innerEdge);
+                                    var graphNodeCreationData = new GraphNodeCreationData(
+                                        newGraphItemTask,
+                                        runtimeDependencies,
+                                        dependencyLibraryRange,
+                                        innerEdge,
+                                        currentCousinDependencies,
+                                        currentDirectAncestors,
+                                        potentiallyEclipsed);
+
                                     dependencyNodeCreationData.Add(graphNodeCreationData);
                                 }
                             }
+
+                            /* Will TODO: Handle CPM stuff later
                             else
                             {
                                 // In case of conflict because of a centrally managed version that is not direct dependency
@@ -218,12 +256,12 @@ namespace NuGet.DependencyResolver
                                 }
 
                                 // Keep the node in the tree if we need to look at it later
-                                if (result.dependencyResult == DependencyResult.PotentiallyDowngraded ||
-                                    result.dependencyResult == DependencyResult.Cycle)
+                                if (result == DependencyResult.PotentiallyDowngraded ||
+                                    result == DependencyResult.Cycle)
                                 {
                                     var dependencyNode = new GraphNode<RemoteResolveResult>(dependency.LibraryRange)
                                     {
-                                        Disposition = result.dependencyResult == DependencyResult.Cycle ? Disposition.Cycle : Disposition.PotentiallyDowngraded,
+                                        Disposition = result == DependencyResult.Cycle ? Disposition.Cycle : Disposition.PotentiallyDowngraded,
                                         OuterNode = node
                                     };
 
@@ -231,6 +269,7 @@ namespace NuGet.DependencyResolver
                                     node.InnerNodes.Add(dependencyNode);
                                 }
                             }
+                            */
                         }
                     }
 
@@ -248,7 +287,10 @@ namespace NuGet.DependencyResolver
                     bool hasInnerNodes = (dependencyItem.Data.Dependencies.Count + (graphNodeCreationData.RuntimeDependencies == null ? 0 : graphNodeCreationData.RuntimeDependencies.Count)) > 0;
                     GraphNode<RemoteResolveResult> newNode = new GraphNode<RemoteResolveResult>(graphNodeCreationData.LibraryRange, hasInnerNodes, false)
                     {
-                        Item = dependencyItem
+                        Item = dependencyItem,
+                        DirectAncestors = graphNodeCreationData.DirectAncestors,
+                        CousinDependencies = graphNodeCreationData.CousinDependencies,
+                        PotentiallyEclipsed = graphNodeCreationData.PotentiallyEclipsed
                     };
 
                     Debug.Assert(newNode.Item != null, "FindLibraryCached should return an unresolved item instead of null");
@@ -728,12 +770,37 @@ namespace NuGet.DependencyResolver
             /// </summary>
             public readonly GraphEdge<RemoteResolveResult> OuterEdge;
 
-            public GraphNodeCreationData(Task<GraphItem<RemoteResolveResult>> graphItemTask, HashSet<LibraryDependency> runtimeDependencies, LibraryRange libraryRange, GraphEdge<RemoteResolveResult> outerEdge)
+            /// <summary>
+            /// The Cousin Dependencies that we have seen so far
+            /// </summary>
+            public readonly HashSet<LibraryDependency> CousinDependencies;
+
+            /// <summary>
+            /// The Direct Ancestors that we have encountered so far
+            /// </summary>
+            public readonly HashSet<string> DirectAncestors;
+
+            /// <summary>
+            /// Whether or not the current node is potentially eclipsed
+            /// </summary>
+            public readonly bool PotentiallyEclipsed;
+
+            public GraphNodeCreationData(
+                Task<GraphItem<RemoteResolveResult>> graphItemTask,
+                HashSet<LibraryDependency> runtimeDependencies,
+                LibraryRange libraryRange,
+                GraphEdge<RemoteResolveResult> outerEdge,
+                HashSet<LibraryDependency> cousinDependencies,
+                HashSet<string> directAncestors,
+                bool potentiallyEclipsed)
             {
                 GraphItemTask = graphItemTask;
                 RuntimeDependencies = runtimeDependencies;
                 LibraryRange = libraryRange;
                 OuterEdge = outerEdge;
+                CousinDependencies = cousinDependencies;
+                DirectAncestors = directAncestors;
+                PotentiallyEclipsed = potentiallyEclipsed;
             }
         }
     }

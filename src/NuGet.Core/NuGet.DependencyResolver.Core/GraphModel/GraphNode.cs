@@ -36,6 +36,17 @@ namespace NuGet.DependencyResolver
         /// </summary>
         public IList<GraphNode<TItem>> ParentNodes { get; }
 
+        public HashSet<LibraryDependency> CousinDependencies { get; internal set; } = [];
+
+        public HashSet<string> DirectAncestors { get; internal set; } = [];
+
+        public bool PotentiallyEclipsed { get; internal set; }
+
+        // Will TODO: Not sure if these 2 are necessary, we will see later
+        public HashSet<LibraryRange> PotentialCycle { get; internal set; } = [];
+
+        public HashSet<LibraryRange> PotentialDowngrade { get; internal set; } = [];
+
         internal bool AreAllParentsRejected()
         {
             var pCount = ParentNodes.Count;
