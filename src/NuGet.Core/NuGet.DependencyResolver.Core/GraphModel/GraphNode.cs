@@ -40,12 +40,11 @@ namespace NuGet.DependencyResolver
 
         public HashSet<string> DirectAncestors { get; internal set; } = [];
 
-        public bool PotentiallyEclipsed { get; internal set; }
+        public HashSet<GraphNode<TItem>> EclipsedBy { get; internal set; } = [];
 
-        // Will TODO: Not sure if these 2 are necessary, we will see later
-        public HashSet<LibraryRange> PotentialCycle { get; internal set; } = [];
+        public bool PotentialCycle { get; internal set; } = false;
 
-        public HashSet<LibraryRange> PotentialDowngrade { get; internal set; } = [];
+        public bool PotentialDowngrade { get; internal set; } = false;
 
         internal bool AreAllParentsRejected()
         {

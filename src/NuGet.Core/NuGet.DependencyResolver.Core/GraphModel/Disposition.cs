@@ -9,6 +9,7 @@ namespace NuGet.DependencyResolver
         Rejected,
         Accepted,
         PotentiallyDowngraded,
+        PotentiallyEclipsed,
         Cycle
     }
 }
