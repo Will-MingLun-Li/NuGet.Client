@@ -151,9 +151,6 @@ namespace NuGet.DependencyResolver
                         // the node is not a direct dependency.
                         if (currentOuterEdge == null || dependency.SuppressParent != LibraryIncludeFlags.All)
                         {
-                            // Will TODO: Replace this with my set comparison logic later
-                            // var result = WalkParentsAndCalculateDependencyResult(currentOuterEdge, dependency, predicate);
-
                             // Will TODO: Deal with transitive pinning stuff later
                             HashSet<string> currentDirectAncestors = node.DirectAncestors;
                             HashSet<LibraryDependency> currentCousinDependencies = node.CousinDependencies;
@@ -213,11 +210,16 @@ namespace NuGet.DependencyResolver
 
                                 if (result == DependencyResult.Acceptable)
                                 {
+                                    // Need to overwrite cousin deps and ancestors
+                                    cachedDepNode.CousinDependencies = currentCousinDependencies;
+                                    cachedDepNode.DirectAncestors = currentDirectAncestors;
+
                                     dependencyNodeCreationData.Add(new GraphNodeCreationData(cachedDepNode, innerEdge));
                                 }
                                 else
                                 {
                                     node.InnerNodes.Add(cachedDepNode);
+                                    // Will TODO: OuterNode might be a bit weird
                                     cachedDepNode.OuterNode = node;
                                 }
                             }
@@ -318,6 +320,8 @@ namespace NuGet.DependencyResolver
                     }
 
                     node.InnerNodes.Add(newNode);
+
+                    // Will TODO: OuterNode might be a bit weird
                     newNode.OuterNode = node;
 
                     // Only continue if the dependency result is acceptable
