@@ -113,8 +113,7 @@ namespace NuGet.Commands
                 analyzeResult.Combine(result);
 
                 flattened.Add(graph.Item);
-                // Will TODO: Not sure if the below is needed
-                // flattened.AddRange(graph.Transitive.Select(node => node.Item));
+                flattened.AddRange(graph.Transitive.Select(node => node.Item));
             }
 
             return new RestoreTargetGraph(

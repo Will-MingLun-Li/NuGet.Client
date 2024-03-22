@@ -201,21 +201,6 @@ namespace NuGet.DependencyResolver
 
                             if (_context.GraphNodeCache.TryGetValue(key, out GraphNode<RemoteResolveResult> cachedDepNode))
                             {
-                                switch (result)
-                                {
-                                    case DependencyResult.Cycle:
-                                        cachedDepNode.PotentialCycle = true;
-                                        break;
-                                    case DependencyResult.PotentiallyDowngraded:
-                                        node.PotentialDowngradeTo.Add(cachedDepNode);
-                                        cachedDepNode.PotentialDowngradeFrom.Add(node);
-                                        break;
-                                    case DependencyResult.Eclipsed:
-                                        cachedDepNode.EclipsedBy.Add(node);
-                                        node.Eclipses.Add(cachedDepNode);
-                                        break;
-                                }
-
                                 if (result == DependencyResult.Acceptable)
                                 {
                                     // Need to overwrite cousin deps and ancestors
@@ -227,8 +212,6 @@ namespace NuGet.DependencyResolver
                                 else
                                 {
                                     node.InnerNodes.Add(cachedDepNode);
-                                    // Will TODO: OuterNode might be a bit weird
-                                    cachedDepNode.OuterNode = node;
                                 }
                             }
                             else
@@ -311,21 +294,7 @@ namespace NuGet.DependencyResolver
                             Item = dependencyItem,
                             DirectAncestors = graphNodeCreationData.DirectAncestors,
                             CousinDependencies = graphNodeCreationData.CousinDependencies,
-                            PotentialCycle = graphNodeCreationData.NodeDependencyResult == DependencyResult.Cycle,
                         };
-
-                        Debug.Assert(newNode.PotentialCycle == true, "newNodes should never be a cycle (Doesn't make sense to have a cycle on something we've never seen before)");
-
-                        if (graphNodeCreationData.NodeDependencyResult == DependencyResult.Eclipsed)
-                        {
-                            newNode.EclipsedBy.Add(node);
-                            node.Eclipses.Add(newNode);
-                        }
-                        else if (graphNodeCreationData.NodeDependencyResult == DependencyResult.PotentiallyDowngraded)
-                        {
-                            node.PotentialDowngradeTo.Add(newNode);
-                            newNode.PotentialDowngradeFrom.Add(node);
-                        }
 
                         Debug.Assert(newNode.Item != null, "FindLibraryCached should return an unresolved item instead of null");
                         MergeRuntimeDependencies(graphNodeCreationData.RuntimeDependencies, newNode);
@@ -335,9 +304,6 @@ namespace NuGet.DependencyResolver
                     }
 
                     node.InnerNodes.Add(newNode);
-
-                    // Will TODO: OuterNode might be a bit weird
-                    newNode.OuterNode = node;
 
                     // Only continue if the dependency result is acceptable
                     if (graphNodeCreationData.NodeDependencyResult == DependencyResult.Acceptable)

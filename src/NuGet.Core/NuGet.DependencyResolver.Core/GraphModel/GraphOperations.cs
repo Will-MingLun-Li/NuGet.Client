@@ -16,6 +16,8 @@ namespace NuGet.DependencyResolver
     {
         private const string NodeArrow = " -> ";
 
+        private static readonly object Locker = new();
+
         private enum WalkState
         {
             Walking,
@@ -26,6 +28,7 @@ namespace NuGet.DependencyResolver
         public static AnalyzeResult<RemoteResolveResult> Analyze(this GraphNode<RemoteResolveResult> root)
         {
             var result = new AnalyzeResult<RemoteResolveResult>();
+            Dictionary<LibraryRange, HashSet<LibraryRange>> possiblyDroppedReferences = new();
 
             // root.CheckCycleAndNearestWins(result.Downgrades, result.Cycles);
             // root.TryResolveConflicts(result.VersionConflicts);
@@ -33,84 +36,330 @@ namespace NuGet.DependencyResolver
             // Remove all downgrades that didn't result in selecting the node we actually downgraded to
             // result.Downgrades.RemoveAll(d => !IsRelevantDowngrade(d));
 
-            Stack<GraphNode<RemoteResolveResult>> stack = new();
-            stack.Push(root);
-
-            while (stack.Count > 0)
+            lock (Locker)
             {
-                var current = stack.Peek();
+                Stack<GraphNode<RemoteResolveResult>> stack = new();
+                stack.Push(root);
 
-                if (current.State == GraphWalkState.Complete)
+                while (stack.Count > 0)
                 {
-                    // another path through the graph has already flattened this node
-                    // so we're done.
-                    _ = stack.Pop();
-                    continue;
-                }
+                    var current = stack.Peek();
 
-                if (current.State == GraphWalkState.Processing && current.PotentialCycle)
-                {
-                    // we're in a cycle so do nothing here and continue
-                    current.State = GraphWalkState.Complete;
-                    _ = stack.Pop();
-                    result.Cycles.Add(current);
-
-                    continue;
-                }
-
-                current.State = GraphWalkState.Processing;
-
-                // at a leaf node (no dependencies/inner nodes), we have a clear flattened
-                // list of references: the single acceptable item
-                if (current.InnerNodes.Count == 0)
-                {
-                    current.State = GraphWalkState.Complete;
-                    _ = stack.Pop();
-                }
-                else
-                {
-                    // at a non-leaf node, we need to flatten the dispositions of the inner nodes and combine them with the current node
-
-                    bool allComplete = true; // assume all inner nodes have been flattened
-
-                    foreach (var innerNode in current.InnerNodes)
+                    if (current.State == GraphWalkState.Complete)
                     {
-                        switch (innerNode.State)
-                        {
-                            case GraphWalkState.Unprocessed:
-                                // this node is not yet flattened, so we need to enqueue it
-                                stack.Push(innerNode);
-                                allComplete = false;
-                                break;
-                            case GraphWalkState.Processing:
-                                Debug.Assert(true, "This code path should never be hit");
-
-                                // Will TODO: Are the below necessary? Just kept it from Rainer's code for now
-                                current.OuterNode = innerNode;
-                                innerNode.State = GraphWalkState.Complete;
-                                break;
-                            case GraphWalkState.Complete:
-                                break;
-                            default:
-                                throw new NotImplementedException("New state not understood");
-                        }
+                        // another path through the graph has already flattened this node
+                        // so we're done.
+                        _ = stack.Pop();
+                        continue;
                     }
 
-                    // if we had to enqueue anything above, we're not ready to flatten yet,
-                    // so leave the entry in the stack
-                    if (allComplete)
+                    if (current.State == GraphWalkState.Processing && current.SubgraphCycles.Count > 0)
                     {
-                        // otherwise, we can flatten the inner nodes and combine them with the current node
-                        current.Transitive = FlattenSubgraphCollectingConflicts(current, result);
-
+                        // we're in a cycle so do nothing here and continue
                         current.State = GraphWalkState.Complete;
-
                         _ = stack.Pop();
+
+                        continue;
+                    }
+
+                    current.State = GraphWalkState.Processing;
+
+                    // at a leaf node (no dependencies/inner nodes), we have a clear flattened
+                    // list of references: the single acceptable item
+                    if (current.InnerNodes.Count == 0)
+                    {
+                        current.Transitive = Array.Empty<GraphNode<RemoteResolveResult>>();
+                        current.State = GraphWalkState.Complete;
+                        _ = stack.Pop();
+                    }
+                    else
+                    {
+                        // at a non-leaf node, we need to flatten the dispositions of the inner nodes
+                        // and combine them with the current node
+
+                        bool allComplete = true; // assume all inner nodes have been flattened
+
+                        foreach (var innerNode in current.InnerNodes)
+                        {
+                            switch (innerNode.State)
+                            {
+                                case GraphWalkState.Unprocessed:
+                                    // this node is not yet flattened, so we need to enqueue it
+                                    stack.Push(innerNode);
+                                    allComplete = false;
+                                    break;
+                                case GraphWalkState.Processing:
+                                    // Because this is a depth-first search, we should only encounter new nodes or nodes whose subgraph has been completely processed.
+                                    // If we encounter a node that is currently being processed (Processing state), it must be one of the ancestors in a circular dependency.
+                                    // Note this in the subgraph notes; we'll aggregrate it later.
+
+                                    // Tests expect the order to start a certain way so note the newly discovered cycle start as itself
+                                    current.SubgraphCycles.Add(current);
+                                    innerNode.SubgraphCycles.Add(innerNode);
+
+                                    current.OuterNode = innerNode;
+
+                                    innerNode.State = GraphWalkState.Complete;
+
+                                    // for our purposes, we reported the cycle, so just trim it (don't put it on the stack again) and resolve everything else best-effort
+                                    break;
+                                case GraphWalkState.Complete:
+                                    break;
+                                default:
+                                    throw new NotImplementedException("New state not understood");
+                            }
+                        }
+
+                        // if we had to enqueue anything above, we're not ready to flatten yet,
+                        // so leave the entry in the stack
+                        if (allComplete)
+                        {
+                            // otherwise, we can flatten the inner nodes and combine them with the current node
+                            current.Transitive = FlattenSubgraphCollectingConflicts(current, result);
+
+                            current.State = GraphWalkState.Complete;
+
+                            _ = stack.Pop();
+                        }
                     }
                 }
             }
 
             return result;
+        }
+
+        private static IList<GraphNode<RemoteResolveResult>> FlattenSubgraphCollectingConflicts(GraphNode<RemoteResolveResult> current, AnalyzeResult<RemoteResolveResult> versionConflicts)
+        {
+            IList<GraphNode<RemoteResolveResult>> directReferences = current.InnerNodes;
+
+            // TODO cache this dictionary
+            Dictionary</* package name */string, /* best found node */ GraphNode<RemoteResolveResult>> direct = new(directReferences.Count);
+            Dictionary</* package name */string, /* best found node */ GraphNode<RemoteResolveResult>> bestTransitive = new();
+            Dictionary<LibraryRange, HashSet<LibraryRange>> possiblyDroppedReferences = new();
+
+            // direct references win over transitive references, so prepopulate the best list
+            // with direct references
+            foreach (var referencedNode in directReferences)
+            {
+                direct[referencedNode.Key.Name] = referencedNode;
+            }
+
+            // then add the rest of the transitive references
+            foreach (var directReference in directReferences)
+            {
+                // accumulate cycles
+                if (directReference.SubgraphCycles?.Count > 0)
+                {
+                    // this cycle might be another window into an existing cycle that we don't need to report again
+                    bool alreadyFound = false;
+                    foreach (var subgraphCycleStart in directReference.SubgraphCycles)
+                    {
+                        GraphNode<RemoteResolveResult> subgraphCyclecurrent = subgraphCycleStart;
+
+                        while (subgraphCyclecurrent.OuterNode != null)
+                        {
+                            if (versionConflicts.Cycles.Any(knownCycleStart => knownCycleStart.Key.Name == subgraphCyclecurrent.Key.Name))
+                            {
+                                alreadyFound = true;
+                                break;
+                            }
+
+                            subgraphCyclecurrent = subgraphCyclecurrent.OuterNode;
+                            if (subgraphCyclecurrent == subgraphCycleStart)
+                            {
+                                break;
+                            }
+                        }
+
+                        if (!alreadyFound)
+                        {
+                            versionConflicts.Cycles.Add(subgraphCycleStart);
+                        }
+                    }
+                }
+
+                // if transitive references aren't computed, this node is a key component in a cycle.
+                // We're in best-effort mode at that point so just move on.
+                if (directReference.Transitive is null)
+                {
+                    continue;
+                }
+
+                foreach (var transitiveReference in directReference.Transitive)
+                {
+                    if (direct.TryGetValue(transitiveReference.Key.Name, out var nearReference))
+                    {
+                        // There's a nearer reference for the same name
+
+                        if (transitiveReference.Key.Equals(nearReference.Key))
+                        {
+                            // If it's the same reference, we don't have a conflict and don't have to do anything,
+                            // because the shorter path will be more relevant
+                            continue;
+                        }
+
+                        // but if the references differ we might need to downgrade or eclipse
+                        // this package's transitive references
+
+                        // TODO null version ranges as in WalkTreeCheckCycleAndNearestWins?
+                        if (RemoteDependencyWalker.IsGreaterThanOrEqualTo(nearReference.Key.VersionRange, transitiveReference.Key.VersionRange))
+                        {
+                            // the direct reference is better than the transitive reference, so keep it
+                            // BUT the fact that a direct reference drops THIS package means that OTHER
+                            // packages in the transitive closure OF THIS may be unnecessary (if they
+                            // were only brought in by this package).
+                            MarkPossiblyDropped(possiblyDroppedReferences, transitiveReference);
+                        }
+                        else
+                        {
+                            // the transitive reference is higher so this is a downgrade
+                            versionConflicts.Downgrades.Add(new DowngradeResult<RemoteResolveResult>
+                            {
+                                DowngradedFrom = transitiveReference,
+                                DowngradedTo = nearReference,
+                            });
+                        }
+                    }
+                    else
+                    {
+                        // we only know this name from transitive references, but there may be differing versions
+                        if (bestTransitive.TryGetValue(transitiveReference.Key.Name, out var cousinReference))
+                        {
+                            // a cousin has brought in this reference--pick the best version
+
+                            if (transitiveReference.Key.VersionRange.Equals(cousinReference.Key.VersionRange) &&
+                                ((transitiveReference.Key.TypeConstraint & cousinReference.Key.TypeConstraint) != LibraryDependencyTarget.None))
+                            {
+                                // the same reference was brought in by two different cousins--no conflict,
+                                // nothing to do
+
+                                continue;
+                            }
+
+                            // TODO null version ranges as in WalkTreeCheckCycleAndNearestWins?
+
+                            if (RemoteDependencyWalker.IsGreaterThanOrEqualTo(transitiveReference.Key.VersionRange, cousinReference.Key.VersionRange))
+                            {
+                                // the new reference is better than the one we already found, so keep it,
+                                // but note the rejection of the old reference so we can scrub the transitive
+                                // closure of anything that was brought in *only* by it
+
+                                bestTransitive[transitiveReference.Key.Name] = directReference;
+
+                                MarkPossiblyDropped(possiblyDroppedReferences, cousinReference);
+                            }
+                        }
+                        else
+                        {
+                            // first time we've seen this reference--add it to the list of references
+                            // to add if they don't need to be dropped
+                            bestTransitive.Add(transitiveReference.Key.Name, directReference);
+                        }
+                    }
+                }
+            }
+
+            List<GraphNode<RemoteResolveResult>> flattenedReferences = new(direct.Count + bestTransitive.Count);
+
+            flattenedReferences.AddRange(direct.Values);
+            flattenedReferences.AddRange(bestTransitive.Values.Where(possiblyEclipsedTransitiveRef => !ShouldBeRemoved(possiblyEclipsedTransitiveRef, possiblyDroppedReferences, current)));
+
+            // check for cycles
+            foreach (var r in flattenedReferences)
+            {
+                if (r.Key.Name == current.Key.Name)
+                {
+                    // Cycle on package name (but different versions)
+
+                    var currentForReconstruction = r;
+
+                    // reverse the path list so we can set `OuterNode` on the way back up
+                    Stack<GraphNode<RemoteResolveResult>> stack = new();
+
+                    // TODO what if there are multiple cycles; each node can only have one OuterNode
+                    throw new NotImplementedException();
+
+                    //// TODO make this less of an interview question
+                    //do
+                    //{
+                    //    stack.Push(pathNode.Element);
+                    //} while (pathNode.Next is not null);
+
+                    //// reconstruct the path to the other reference in OuterNodes
+                    //while (stack.Count > 0)
+                    //{
+                    //    GraphNode<RemoteResolveResult> node = stack.Pop();
+
+                    //    currentForReconstruction.OuterNode = node;
+                    //    currentForReconstruction = node;
+                    //}
+
+                    //currentForReconstruction.OuterNode = current;
+
+                    //current.SubgraphCycles.Add(r);
+
+                    //versionConflicts.Cycles.Add(r);
+                }
+            }
+
+            return flattenedReferences;
+        }
+
+        private static void MarkPossiblyDropped(Dictionary<LibraryRange, HashSet<LibraryRange>> possiblyDroppedReferences, GraphNode<RemoteResolveResult> eclipsedReference)
+        {
+            foreach (var possiblyDroppedReference in eclipsedReference.Transitive.Select(r => r.Key))
+            {
+                if (!possiblyDroppedReferences.TryGetValue(possiblyDroppedReference, out var droppedBecauseOf))
+                {
+                    droppedBecauseOf = new HashSet<LibraryRange>();
+                    possiblyDroppedReferences[possiblyDroppedReference] = droppedBecauseOf;
+                }
+                droppedBecauseOf.Add(eclipsedReference.Key);
+            }
+        }
+
+        /// <summary>
+        /// Packages that were only brought in by a package that was eclipsed should be removed.
+        /// </summary>
+        private static bool ShouldBeRemoved(GraphNode<RemoteResolveResult> possiblyEclipsedTransitiveRef, Dictionary<LibraryRange, HashSet<LibraryRange>> possiblyDroppedReferences, GraphNode<RemoteResolveResult> current)
+        {
+            if (possiblyDroppedReferences.Count == 0 ||
+                !possiblyDroppedReferences.TryGetValue(possiblyEclipsedTransitiveRef.Key, out var eclipsedReferences))
+            {
+                return false;
+            }
+
+            // Ok so the package version matches one that could be eclipsed, but is it actually eclipsed?
+            // It is if and only if the only references to it are from eclipsed packages.
+            //
+            // To figure that out, walk the paths to the reference and see if any of them don't include
+            // one of the eclipsed references.
+
+            // recurse transitive deps EXCEPT for the ones we're checking for removal, and if we find the
+            // possibly eclipsed reference, it's not eclipsed
+
+            return !FindNodeExcludingPaths(start: current, searchFor: possiblyEclipsedTransitiveRef.Key, unlessOnPath: eclipsedReferences);
+        }
+
+        private static bool FindNodeExcludingPaths(GraphNode<RemoteResolveResult> start, LibraryRange searchFor, HashSet<LibraryRange> unlessOnPath)
+        {
+            if (start.Key.Equals(searchFor))
+            {
+                return true;
+            }
+
+            foreach (var innerNode in start.InnerNodes)
+            {
+                if (!unlessOnPath.Contains(innerNode.Key))
+                {
+                    if (FindNodeExcludingPaths(innerNode, searchFor, unlessOnPath))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         /// <summary>

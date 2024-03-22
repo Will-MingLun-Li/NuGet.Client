@@ -36,6 +36,11 @@ namespace NuGet.DependencyResolver
         public Disposition Disposition { get; set; }
 
         /// <summary>
+        /// Nodes that are transitively referenced by this node, not including this node.
+        /// </summary>
+        public IList<GraphNode<TItem>> Transitive { get; internal set; }
+
+        /// <summary>
         /// Used in case that a node is removed from its outernode and needs to keep reference of its parents.
         /// </summary>
         public IList<GraphNode<TItem>> ParentNodes { get; }
@@ -44,23 +49,9 @@ namespace NuGet.DependencyResolver
 
         public HashSet<string> DirectAncestors { get; internal set; } = [];
 
-        public HashSet<GraphNode<TItem>> EclipsedBy { get; internal set; } = [];
-
-        /// <summary>
-        /// TODO: Might not be necessary but keeping track of both ways make GraphOperation easier
-        /// </summary>
-        public HashSet<GraphNode<TItem>> Eclipses { get; internal set; } = [];
-
-        public HashSet<GraphNode<TItem>> PotentialDowngradeTo { get; internal set; } = [];
-
-        /// <summary>
-        ///  TODO: Might not be necessary but keeping track of both ways make GraphOperation easier
-        /// </summary>
-        public HashSet<GraphNode<TItem>> PotentialDowngradeFrom { get; internal set; } = [];
-
-        public bool PotentialCycle { get; internal set; } = false;
-
         public GraphWalkState State { get; set; }
+
+        public List<GraphNode<TItem>> SubgraphCycles { get; internal set; } = new();
 
         internal bool AreAllParentsRejected()
         {
