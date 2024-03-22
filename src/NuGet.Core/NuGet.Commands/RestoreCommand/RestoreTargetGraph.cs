@@ -1,7 +1,6 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using NuGet.Client;
@@ -9,6 +8,7 @@ using NuGet.Common;
 using NuGet.DependencyResolver;
 using NuGet.Frameworks;
 using NuGet.LibraryModel;
+using NuGet.Packaging;
 using NuGet.RuntimeModel;
 
 namespace NuGet.Commands
@@ -111,67 +111,11 @@ namespace NuGet.Commands
                 var result = graph.Analyze();
 
                 analyzeResult.Combine(result);
+
+                flattened.Add(graph.Item);
+                // Will TODO: Not sure if the below is needed
+                // flattened.AddRange(graph.Transitive.Select(node => node.Item));
             }
-
-            graphs.ForEach(node =>
-                {
-                    if (node == null || node.Key == null)
-                    {
-                        return;
-                    }
-
-                    if (node.Disposition != Disposition.Rejected)
-                    {
-                        if (node.Disposition == Disposition.Acceptable)
-                        {
-                            // This wasn't resolved. It's a conflict.
-                            HashSet<ResolverRequest> ranges;
-                            if (!conflicts.TryGetValue(node.Key.Name, out ranges))
-                            {
-                                ranges = new HashSet<ResolverRequest>();
-                                conflicts[node.Key.Name] = ranges;
-                            }
-
-                            // OuterNode may be null if the project itself conflicts with a package name
-                            var requestor = node.OuterNode == null ? node.Item.Key : node.OuterNode.Item.Key;
-
-                            ranges.Add(new ResolverRequest(requestor, node.Key));
-                        }
-
-                        if (node?.Item?.Key?.Type == LibraryType.Unresolved)
-                        {
-                            if (node.Key.VersionRange != null)
-                            {
-                                unresolved.Add(node.Key);
-                            }
-
-                            return;
-                        }
-
-                        // Don't add rejected nodes since we only want to write reduced nodes
-                        // to the lock file
-                        flattened.Add(node.Item);
-                    }
-
-                    if (node?.OuterNode != null && node.Item.Key.Type != LibraryType.Unresolved)
-                    {
-                        var dependencyKey = new ResolvedDependencyKey(
-                            parent: node.OuterNode.Item.Key,
-                            range: node.Key.VersionRange,
-                            child: node.Item.Key);
-
-                        resolvedDependencies.Add(dependencyKey);
-                    }
-
-                    // If the package came from a remote library provider, it needs to be installed locally
-                    // Rejected nodes are included here to avoid downloading them from remote sources
-                    // each time the lock file is generated.
-                    var isRemote = context.RemoteLibraryProviders.Contains(node.Item.Data.Match.Provider);
-                    if (isRemote)
-                    {
-                        install.Add(node.Item.Data.Match);
-                    }
-                });
 
             return new RestoreTargetGraph(
                 conflicts.Select(p => new ResolverConflict(p.Key, p.Value)),

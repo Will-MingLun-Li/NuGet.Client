@@ -201,11 +201,19 @@ namespace NuGet.DependencyResolver
 
                             if (_context.GraphNodeCache.TryGetValue(key, out GraphNode<RemoteResolveResult> cachedDepNode))
                             {
-                                if (!cachedDepNode.PotentialCycle && result == DependencyResult.Cycle) cachedDepNode.PotentialCycle = true;
-                                else if (!cachedDepNode.PotentialDowngrade && result == DependencyResult.PotentiallyDowngraded) cachedDepNode.PotentialDowngrade = true;
-                                else if (result == DependencyResult.Eclipsed)
+                                switch (result)
                                 {
-                                    cachedDepNode.EclipsedBy.Add(node);
+                                    case DependencyResult.Cycle:
+                                        cachedDepNode.PotentialCycle = true;
+                                        break;
+                                    case DependencyResult.PotentiallyDowngraded:
+                                        node.PotentialDowngradeTo.Add(cachedDepNode);
+                                        cachedDepNode.PotentialDowngradeFrom.Add(node);
+                                        break;
+                                    case DependencyResult.Eclipsed:
+                                        cachedDepNode.EclipsedBy.Add(node);
+                                        node.Eclipses.Add(cachedDepNode);
+                                        break;
                                 }
 
                                 if (result == DependencyResult.Acceptable)
@@ -304,12 +312,19 @@ namespace NuGet.DependencyResolver
                             DirectAncestors = graphNodeCreationData.DirectAncestors,
                             CousinDependencies = graphNodeCreationData.CousinDependencies,
                             PotentialCycle = graphNodeCreationData.NodeDependencyResult == DependencyResult.Cycle,
-                            PotentialDowngrade = graphNodeCreationData.NodeDependencyResult == DependencyResult.PotentiallyDowngraded,
                         };
+
+                        Debug.Assert(newNode.PotentialCycle == true, "newNodes should never be a cycle (Doesn't make sense to have a cycle on something we've never seen before)");
 
                         if (graphNodeCreationData.NodeDependencyResult == DependencyResult.Eclipsed)
                         {
                             newNode.EclipsedBy.Add(node);
+                            node.Eclipses.Add(newNode);
+                        }
+                        else if (graphNodeCreationData.NodeDependencyResult == DependencyResult.PotentiallyDowngraded)
+                        {
+                            node.PotentialDowngradeTo.Add(newNode);
+                            newNode.PotentialDowngradeFrom.Add(node);
                         }
 
                         Debug.Assert(newNode.Item != null, "FindLibraryCached should return an unresolved item instead of null");

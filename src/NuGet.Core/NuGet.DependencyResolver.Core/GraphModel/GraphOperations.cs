@@ -27,11 +27,88 @@ namespace NuGet.DependencyResolver
         {
             var result = new AnalyzeResult<RemoteResolveResult>();
 
-            root.CheckCycleAndNearestWins(result.Downgrades, result.Cycles);
-            root.TryResolveConflicts(result.VersionConflicts);
+            // root.CheckCycleAndNearestWins(result.Downgrades, result.Cycles);
+            // root.TryResolveConflicts(result.VersionConflicts);
 
             // Remove all downgrades that didn't result in selecting the node we actually downgraded to
-            result.Downgrades.RemoveAll(d => !IsRelevantDowngrade(d));
+            // result.Downgrades.RemoveAll(d => !IsRelevantDowngrade(d));
+
+            Stack<GraphNode<RemoteResolveResult>> stack = new();
+            stack.Push(root);
+
+            while (stack.Count > 0)
+            {
+                var current = stack.Peek();
+
+                if (current.State == GraphWalkState.Complete)
+                {
+                    // another path through the graph has already flattened this node
+                    // so we're done.
+                    _ = stack.Pop();
+                    continue;
+                }
+
+                if (current.State == GraphWalkState.Processing && current.PotentialCycle)
+                {
+                    // we're in a cycle so do nothing here and continue
+                    current.State = GraphWalkState.Complete;
+                    _ = stack.Pop();
+                    result.Cycles.Add(current);
+
+                    continue;
+                }
+
+                current.State = GraphWalkState.Processing;
+
+                // at a leaf node (no dependencies/inner nodes), we have a clear flattened
+                // list of references: the single acceptable item
+                if (current.InnerNodes.Count == 0)
+                {
+                    current.State = GraphWalkState.Complete;
+                    _ = stack.Pop();
+                }
+                else
+                {
+                    // at a non-leaf node, we need to flatten the dispositions of the inner nodes and combine them with the current node
+
+                    bool allComplete = true; // assume all inner nodes have been flattened
+
+                    foreach (var innerNode in current.InnerNodes)
+                    {
+                        switch (innerNode.State)
+                        {
+                            case GraphWalkState.Unprocessed:
+                                // this node is not yet flattened, so we need to enqueue it
+                                stack.Push(innerNode);
+                                allComplete = false;
+                                break;
+                            case GraphWalkState.Processing:
+                                Debug.Assert(true, "This code path should never be hit");
+
+                                // Will TODO: Are the below necessary? Just kept it from Rainer's code for now
+                                current.OuterNode = innerNode;
+                                innerNode.State = GraphWalkState.Complete;
+                                break;
+                            case GraphWalkState.Complete:
+                                break;
+                            default:
+                                throw new NotImplementedException("New state not understood");
+                        }
+                    }
+
+                    // if we had to enqueue anything above, we're not ready to flatten yet,
+                    // so leave the entry in the stack
+                    if (allComplete)
+                    {
+                        // otherwise, we can flatten the inner nodes and combine them with the current node
+                        current.Transitive = FlattenSubgraphCollectingConflicts(current, result);
+
+                        current.State = GraphWalkState.Complete;
+
+                        _ = stack.Pop();
+                    }
+                }
+            }
 
             return result;
         }

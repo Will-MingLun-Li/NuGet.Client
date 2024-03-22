@@ -28,6 +28,10 @@ namespace NuGet.DependencyResolver
         public LibraryRange Key { get; set; }
         public GraphItem<TItem> Item { get; set; }
         public GraphNode<TItem> OuterNode { get; set; }
+
+        /// <summary>
+        /// Nodes directly referenced by this node.
+        /// </summary>
         public IList<GraphNode<TItem>> InnerNodes { get; set; }
         public Disposition Disposition { get; set; }
 
@@ -42,9 +46,21 @@ namespace NuGet.DependencyResolver
 
         public HashSet<GraphNode<TItem>> EclipsedBy { get; internal set; } = [];
 
+        /// <summary>
+        /// TODO: Might not be necessary but keeping track of both ways make GraphOperation easier
+        /// </summary>
+        public HashSet<GraphNode<TItem>> Eclipses { get; internal set; } = [];
+
+        public HashSet<GraphNode<TItem>> PotentialDowngradeTo { get; internal set; } = [];
+
+        /// <summary>
+        ///  TODO: Might not be necessary but keeping track of both ways make GraphOperation easier
+        /// </summary>
+        public HashSet<GraphNode<TItem>> PotentialDowngradeFrom { get; internal set; } = [];
+
         public bool PotentialCycle { get; internal set; } = false;
 
-        public bool PotentialDowngrade { get; internal set; } = false;
+        public GraphWalkState State { get; set; }
 
         internal bool AreAllParentsRejected()
         {
@@ -95,5 +111,12 @@ namespace NuGet.DependencyResolver
         {
             return (Item?.Key ?? Key) + " " + Disposition;
         }
+    }
+
+    public enum GraphWalkState
+    {
+        Unprocessed,
+        Processing,
+        Complete,
     }
 }
