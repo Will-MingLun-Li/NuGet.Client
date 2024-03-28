@@ -33,6 +33,7 @@ namespace NuGet.DependencyResolver
             PackageSourceMapping = packageSourceMapping ?? throw new ArgumentNullException(nameof(packageSourceMapping));
 
             FindLibraryEntryCache = new TaskResultCache<LibraryRangeCacheKey, GraphItem<RemoteResolveResult>>();
+            GraphNodeCache = graphNodeCache ?? new ConcurrentDictionary<LibraryRangeCacheKey, GraphNode<RemoteResolveResult>>();
             ResolvePackageLibraryMatchCache = new TaskResultCache<LibraryRange, Tuple<LibraryRange, RemoteMatch>>();
 
             LockFileLibraries = new Dictionary<LockFileCacheKey, IList<LibraryIdentity>>();
